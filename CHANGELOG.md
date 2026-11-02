@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.3
+
+### Fixed
+
+- 侧栏底部的眼睛按钮点击无反应：1.0.1 重构时把开关处理换成 `toggle()`，但只改到设置行的 `onClick`（缩进不同漏改），侧栏按钮仍在调用已删除的 `enable()` / `disable()`，点击直接抛 `ReferenceError` 被 React 吞掉，所以只有设置里的开关有效。现两处统一为 `toggle`，并复核了全部 `disable(` 调用点。
+
 ## 1.0.2
 
 ### Fixed

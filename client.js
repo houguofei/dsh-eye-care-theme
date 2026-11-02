@@ -396,10 +396,7 @@ window.__ModuleLoader__.load({
               className: 'dshEyeCareFooter',
               'data-rail': props.wide === false ? 'true' : 'false',
               'data-active': active ? 'true' : 'false',
-              onClick: () => {
-                if (active) disable()
-                else enable()
-              },
+              onClick: toggle,
             },
             h(
               'svg',
