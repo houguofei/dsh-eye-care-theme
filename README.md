@@ -56,31 +56,34 @@ git clone https://github.com/houguofei/dsh-eye-care-theme
 
 | 关注点 | 做法 |
 | --- | --- |
-| 主题注册 | `ctx.theme.register({ id: 'eye-care', colorScheme: 'light', tokens })`，随插件释放 |
+| 配色叠加 | `ctx.theme.overrideTokens('dsh-eye-care-theme', {…})`——在浅色主题之上叠加一层 token 覆盖，随插件释放 |
 | 设置入口 | `settings.general.item`，`id: 'eye-care'`，`order: 10.5` |
 | 侧栏入口 | `sidebar.footer.action`，`id: 'eye-care'`，`order: 10`，按 ownerProps `wide` 切换尺寸 |
-| 偏好持久化 | `localStorage`（第三方主题 id 不进 DSH 内置设置 schema） |
+| 偏好持久化 | Host 侧 `Config`（`enabled` / `previous`）+ `settings.configure`，落在 profile 设置文档的 `eye-care-theme` 命名空间，浏览器通过 `ctx.configForms.get()` 读写 |
 | 文案 | 通过 Client locale 服务注册 `zh` / `en` 字典 |
+
+为什么不注册「第三方主题 id」而是叠加覆盖层：内置主题服务只认 `light` / `dark` / `system` 三个偏好值，第三方 id 不写进设置；一旦 Host 把设置文档回填给前端，偏好就会被改回 `light`/`dark`，第三方主题随之失效。改成「浅色 + 覆盖层」后回填不再打断护眼，同时偏好本身是内置值，重启也能恢复。
 
 ## 已知限制
 
-- DSH 的内置 bootstrap 会先按已保存的浅色/深色画首屏，插件加载后才切到护眼，启动时会有一次很短的配色过渡。
-- 偏好按浏览器存储；换浏览器或清站点数据后需要重新开启（内置的浅色/深色偏好不受影响）。
+- DSH 的内置 bootstrap 会先按保存的浅色画首屏，插件加载后才叠上暖色，启动时有一次很短的配色过渡。
+- 护眼状态下在「外观」里选「浅色」不会关闭护眼（两者基底相同，无法区分），请用护眼开关关闭；选「深色」或「跟随系统（深色）」会自动退出。
 - 只改设计 token，组件里硬编码的颜色（个别图标、内嵌第三方内容）不会跟着变。
-- 护眼是浅色系主题；在深色偏好下开启会明显变亮，属预期行为。
+- 护眼是浅色系配色；在深色偏好下开启会明显变亮，属预期行为。
 
 ## 开发
 
 ```
-client.js        浏览器半：主题 token 表、样式、两个槽位注册、localStorage 同步
-index.js         Host 半：无运行时资源，仅占位
+client.js        浏览器半：token 表、样式、两个槽位注册、覆盖层与 Host 开关同步
+index.js         Host 半：Config（enabled / previous）+ settings.configure
 cordis.patch.yml bundle 补丁：插入 eye-care-theme 一行
-package.json     bundle 清单（dsh.bundle.patch + dsh.client）
+package.json     bundle 清单（dsh.bundle.patch + dsh.client + schemastery 依赖）
 locale/          插件管理器里显示的标题与描述（zh / en）
 icon.svg         插件图标
 ```
 
-- 改配色：只动 `client.js` 顶部的 `TOKENS` 对象，键是 CSS 自定义属性名，值是单个 CSS 值（主题已经声明 `colorScheme: 'light'`，所以不需要 light/dark 成对值）。
+- 依赖：Host 半 import `@deepseek-ai/schemastery`，克隆后先在该目录跑一次 `pnpm install`（或 `npm install`）。
+- 改配色：只动 `client.js` 顶部的 `TOKENS` 对象，键是 CSS 自定义属性名，值是单个 CSS 值（插件会把它转成 `{ light, dark }` 交给 `overrideTokens`）。
 - 语法自检：`node --check client.js && node --check index.js`。
 
 ## License

@@ -56,31 +56,34 @@ Harness's alias layer reads almost everything from the `--dsw-static-*` scales, 
 
 | Concern | Implementation |
 | --- | --- |
-| Theme registration | `ctx.theme.register({ id: 'eye-care', colorScheme: 'light', tokens })`, released with the plugin |
+| Palette | `ctx.theme.overrideTokens('dsh-eye-care-theme', {…})` — a token layer stacked over the light theme, released with the plugin |
 | Settings entry | `settings.general.item`, `id: 'eye-care'`, `order: 10.5` |
 | Sidebar entry | `sidebar.footer.action`, `id: 'eye-care'`, `order: 10`, sized by the `wide` owner prop |
-| Preference | `localStorage` (third-party theme ids do not cross the built-in settings schema) |
+| Preference | hosted `Config` (`enabled` / `previous`) plus `settings.configure`, stored in the profile settings document under the `eye-care-theme` namespace and read/written by the browser through `ctx.configForms.get()` |
 | Copy | `zh` / `en` dictionaries registered through the Client locale service |
+
+Why a token layer instead of a registered theme id: the built-in theme service only accepts `light` / `dark` / `system` as preferences, so a third-party id never reaches the settings document. As soon as the Host echoes the stored preference back, the client resets to `light`/`dark` and the third-party theme disappears. Stacking a layer over `light` keeps eye care alive through that echo, and the preference itself stays a built-in value that survives a restart.
 
 ## Known limitations
 
-- DSH's built-in bootstrap paints the saved light/dark palette before the plugin loads, so there is a very short color transition at startup.
-- The preference is per browser; a different browser or cleared site data needs one click again (the built-in light/dark preference is unaffected).
+- DSH's built-in bootstrap paints the saved light palette before the plugin loads, so the warm tones arrive after one very short transition.
+- While eye care is on, picking **light** in Appearance does not turn it off (the base is identical, so the two are indistinguishable) — use the eye-care switch. Picking **dark** or **system (dark)** does turn it off.
 - Only design tokens change: hard-coded colors inside components (a few icons, embedded third-party content) keep their own values.
 - Eye care is a light scheme; enabling it under a dark preference brightens the window noticeably, which is expected.
 
 ## Development
 
 ```
-client.js         browser half: token table, styles, both slot registrations, localStorage sync
-index.js          host half: no runtime resource, placeholder only
+client.js         browser half: token table, styles, both slot registrations, layer and Host-switch sync
+index.js          host half: Config (enabled / previous) plus settings.configure
 cordis.patch.yml  bundle patch: inserts the eye-care-theme row
-package.json      bundle manifest (dsh.bundle.patch + dsh.client)
+package.json      bundle manifest (dsh.bundle.patch + dsh.client + schemastery dependency)
 locale/           plugin-manager title and description (zh / en)
 icon.svg          plugin icon
 ```
 
-- To recolor, edit only the `TOKENS` object at the top of `client.js`: keys are CSS custom property names and values are single CSS values (the theme already declares `colorScheme: 'light'`, so no light/dark pairs are needed).
+- Dependency: the host half imports `@deepseek-ai/schemastery`; run `pnpm install` (or `npm install`) in this directory after cloning.
+- To recolor, edit only the `TOKENS` object at the top of `client.js`: keys are CSS custom property names and values are single CSS values (the plugin turns them into the `{ light, dark }` pairs `overrideTokens` expects).
 - Syntax check: `node --check client.js && node --check index.js`.
 
 ## License

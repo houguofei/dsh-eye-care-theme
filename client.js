@@ -4,13 +4,17 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const h = React.createElement
 
-    /** Registered theme id; also the `theme` preference value while it is active. */
-    const THEME_ID = 'eye-care'
+    /**
+     * Host settings namespace of this plugin — the bundle patch entry id. The Host
+     * persists these fields in the profile, so the choice survives a restart even
+     * though the page origin (and therefore Web storage) does not.
+     */
+    const NAMESPACE = 'eye-care-theme'
+    /** Settings fields: the switch, and the appearance to restore when it turns off. */
+    const ENABLED = 'enabled'
+    const PREVIOUS = 'previous'
     /** Locale namespace of this plugin's Settings row copy. */
     const NS = 'eye-care'
-    /** localStorage keys: whether eye care is on, and which preference to restore. */
-    const ACTIVE_KEY = 'dsh-eye-care:enabled'
-    const PREVIOUS_KEY = 'dsh-eye-care:previous'
 
     const zh = {
       'eyeCare.title': '护眼模式',
@@ -178,40 +182,62 @@ window.__ModuleLoader__.load({
 
     const PLUGIN_ID = 'dsh-eye-care-theme'
 
-    function read(key) {
-      try {
-        return window.localStorage.getItem(key)
-      } catch {
-        return null
-      }
-    }
-
-    function write(key, value) {
-      try {
-        window.localStorage.setItem(key, value)
-      } catch {
-        // Storage can be unavailable in hardened browsers; the session still works.
-      }
-    }
+    /** The same palette in the light/dark shape `overrideTokens` validates. */
+    const TOKEN_PAIRS = Object.fromEntries(
+      Object.entries(TOKENS).map(([name, value]) => [name, { light: value, dark: value }]),
+    )
 
     return {
-      inject: ['theme', 'slots', 'locale'],
+      inject: ['theme', 'slots', 'locale', 'configForms', 'remote'],
       apply(ctx) {
-        const isActive = () => ctx.theme.getTheme().preference === THEME_ID
+        const prefs = ctx.configForms.get(NAMESPACE)
+        const state = () => prefs.getSnapshot().value
+        const isEnabled = () => state()?.enabled === true
+        /** Guard for the synchronous `theme/change` fired by our own `setTheme` calls. */
+        let ownWrite = false
+        let layer
 
-        const enable = () => {
-          const previous = ctx.theme.getTheme().preference
-          write(PREVIOUS_KEY, previous === THEME_ID ? 'light' : previous)
-          ctx.theme.setTheme(THEME_ID)
-          write(ACTIVE_KEY, '1')
+        /** Stack the warm palette over the light scheme. */
+        const addLayer = () => {
+          if (layer === undefined) layer = ctx.theme.overrideTokens(PLUGIN_ID, TOKEN_PAIRS)
+          // A paper palette only reads correctly on the light base.
+          if (ctx.theme.getTheme().preference !== 'light') ctx.theme.setTheme('light')
         }
 
-        const disable = () => {
-          const previous = read(PREVIOUS_KEY)
-          const known = previous !== null && ctx.theme.getTheme().themes.some((theme) => theme.id === previous)
-          const target = previous === 'system' || known ? previous : 'system'
-          ctx.theme.setTheme(target)
-          write(ACTIVE_KEY, '0')
+        const removeLayer = () => {
+          if (layer === undefined) return
+          layer()
+          layer = undefined
+        }
+
+        /** Turn eye care off; `restore` puts back the appearance the user came from. */
+        const disable = (restore) => {
+          ownWrite = true
+          try {
+            if (isEnabled()) prefs.set(ENABLED, false)
+            removeLayer()
+            if (restore) {
+              const previous = state()?.previous
+              const known = previous === 'light' || previous === 'dark' || previous === 'system'
+              ctx.theme.setTheme(known ? previous : 'light')
+            }
+          } finally {
+            ownWrite = false
+          }
+        }
+
+        const toggle = () => {
+          if (isEnabled()) {
+            disable(true)
+            return
+          }
+          const previous = ctx.theme.getTheme().preference
+          // One mutation so the Host document never holds half of the pair.
+          prefs.mutate([
+            { op: 'set', path: [PREVIOUS], value: previous === 'light' ? 'light' : previous },
+            { op: 'set', path: [ENABLED], value: true },
+          ])
+          addLayer()
         }
 
         ctx.effect(() => {
@@ -219,42 +245,34 @@ window.__ModuleLoader__.load({
           tag.dataset.plugin = PLUGIN_ID
           tag.textContent = CSS
           document.head.appendChild(tag)
-          return () => {
-            tag.remove()
-          }
-        }, 'eye-care: settings row styles')
+          return () => tag.remove()
+        }, 'eye-care: row styles')
 
-        ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'eye-care: row dictionaries')
+        ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'eye-care: dictionaries')
 
-        // The registered theme is disposed with the plugin; disposing it while it
-        // backs the preference resets the preference, so the UI never keeps tokens
-        // of a theme that is gone.
+        // The Host document is the single source of truth: start from it, then follow
+        // every accepted write (ours and the plugin manager's).
         ctx.effect(() => {
-          const dispose = ctx.theme.register({
-            id: THEME_ID,
-            colorScheme: 'light',
-            tokens: TOKENS,
+          if (isEnabled()) addLayer()
+          const off = prefs.subscribe(() => {
+            if (isEnabled()) addLayer()
+            else removeLayer()
           })
-          if (read(ACTIVE_KEY) === '1') {
-            try {
-              ctx.theme.setTheme(THEME_ID)
-            } catch {
-              write(ACTIVE_KEY, '0')
-            }
-          }
           return () => {
-            dispose()
+            off()
+            removeLayer()
           }
-        }, 'eye-care: theme registration')
+        }, 'eye-care: settings mirror')
 
-        // Choosing any other appearance (or a Host push) ends eye care, so the
-        // remembered flag never fights the Appearance row on the next start.
+        // Picking light/dark/system in Appearance means the user left eye care: drop
+        // the layer and let the switch follow, without rewriting their choice.
         ctx.effect(
           () =>
             ctx.on('theme/change', (snapshot) => {
-              if (snapshot.preference !== THEME_ID) write(ACTIVE_KEY, '0')
+              if (ownWrite || !isEnabled()) return
+              if (snapshot.preference !== 'light') disable(false)
             }),
-          'eye-care: preference mirror',
+          'eye-care: appearance mirror',
         )
 
         /** Translate one row key, falling back to the built-in copy. */
@@ -271,16 +289,10 @@ window.__ModuleLoader__.load({
           }
         }
 
-        /** Re-render on every theme change so both entries mirror the live preference. */
+        /** Follow the Host switch for both entries. */
         const useActive = () => {
-          const [active, setActive] = React.useState(isActive)
-          React.useEffect(
-            () =>
-              ctx.on('theme/change', (snapshot) => {
-                setActive(snapshot.preference === THEME_ID)
-              }),
-            [],
-          )
+          const [active, setActive] = React.useState(isEnabled)
+          React.useEffect(() => prefs.subscribe(() => setActive(isEnabled())), [])
           return active
         }
 
@@ -304,10 +316,7 @@ window.__ModuleLoader__.load({
                 'aria-checked': active,
                 'aria-label': label('eyeCare.switch'),
                 className: 'dshEyeCareSwitch',
-                onClick: () => {
-                  if (active) disable()
-                  else enable()
-                },
+                onClick: toggle,
               },
               h('span', { className: 'dshEyeCareKnob' }),
             ),
