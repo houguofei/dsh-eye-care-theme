@@ -1,6 +1,6 @@
 {
   "name": "dsh-eye-care-theme",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "Eye-care (warm paper) theme for DeepSeek Harness: a third palette beside light/dark, a Settings switch, and a one-click sidebar toggle.",
   "keywords": [

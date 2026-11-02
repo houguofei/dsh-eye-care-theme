@@ -195,26 +195,66 @@ window.__ModuleLoader__.load({
         const isEnabled = () => state()?.enabled === true
         /** Guard for the synchronous `theme/change` fired by our own `setTheme` calls. */
         let ownWrite = false
+        /**
+         * Counts our own settings writes whose answer has not landed yet, the same
+         * way ui-theme does: while one is in flight the mirror still holds the old
+         * value, so a naive mirror callback would undo what the click just did.
+         */
+        let pending = 0
         let layer
+        /** Entry components re-read `isOn` whenever the layer changes. */
+        const listeners = new Set()
+        const announce = () => {
+          for (const notify of [...listeners]) notify(isOn())
+        }
+        /** What is in effect right now: the stacked layer, not a possibly stale document. */
+        function isOn() {
+          return layer !== undefined || isEnabled()
+        }
+
+        /** Queue one Host write and release the pending guard when it settles. */
+        const track = (operation) => {
+          pending += 1
+          const settle = () => {
+            pending -= 1
+          }
+          Promise.resolve()
+            .then(operation)
+            .then(settle, settle)
+        }
 
         /** Stack the warm palette over the light scheme. */
         const addLayer = () => {
+          // Switch to the light base FIRST. `overrideTokens` publishes, and that
+          // `theme/change` would otherwise reach the appearance mirror while the
+          // preference still reads system/dark — the mirror would read it as "the
+          // user left eye care" and immediately remove the layer just stacked.
+          if (ctx.theme.getTheme().preference !== 'light') {
+            ownWrite = true
+            try {
+              ctx.theme.setTheme('light')
+            } finally {
+              ownWrite = false
+            }
+          }
           if (layer === undefined) layer = ctx.theme.overrideTokens(PLUGIN_ID, TOKEN_PAIRS)
-          // A paper palette only reads correctly on the light base.
-          if (ctx.theme.getTheme().preference !== 'light') ctx.theme.setTheme('light')
+          announce()
         }
 
         const removeLayer = () => {
           if (layer === undefined) return
           layer()
           layer = undefined
+          announce()
         }
 
         /** Turn eye care off; `restore` puts back the appearance the user came from. */
         const disable = (restore) => {
           ownWrite = true
           try {
-            if (isEnabled()) prefs.set(ENABLED, false)
+            // Always record the off state: a stale mirror must not leave the Host
+            // document claiming the switch is on.
+            track(() => prefs.set(ENABLED, false))
             removeLayer()
             if (restore) {
               const previous = state()?.previous
@@ -227,16 +267,19 @@ window.__ModuleLoader__.load({
         }
 
         const toggle = () => {
-          if (isEnabled()) {
+          // Decide from what is on screen, not from a possibly lagging document read.
+          if (isOn()) {
             disable(true)
             return
           }
           const previous = ctx.theme.getTheme().preference
           // One mutation so the Host document never holds half of the pair.
-          prefs.mutate([
-            { op: 'set', path: [PREVIOUS], value: previous === 'light' ? 'light' : previous },
-            { op: 'set', path: [ENABLED], value: true },
-          ])
+          track(() =>
+            prefs.mutate([
+              { op: 'set', path: [PREVIOUS], value: previous === 'light' ? 'light' : previous },
+              { op: 'set', path: [ENABLED], value: true },
+            ]),
+          )
           addLayer()
         }
 
@@ -250,14 +293,22 @@ window.__ModuleLoader__.load({
 
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'eye-care: dictionaries')
 
-        // The Host document is the single source of truth: start from it, then follow
-        // every accepted write (ours and the plugin manager's).
+        /**
+         * Follow the Host document. Skipped while our own write is in flight and
+         * while the document has not been read yet, so the layer only ever mirrors
+         * a value the Host has actually accepted.
+         */
+        const sync = () => {
+          if (pending > 0) return
+          const value = state()
+          if (value === undefined) return
+          if (value.enabled === true) addLayer()
+          else removeLayer()
+        }
+
         ctx.effect(() => {
-          if (isEnabled()) addLayer()
-          const off = prefs.subscribe(() => {
-            if (isEnabled()) addLayer()
-            else removeLayer()
-          })
+          sync()
+          const off = prefs.subscribe(sync)
           return () => {
             off()
             removeLayer()
@@ -289,10 +340,17 @@ window.__ModuleLoader__.load({
           }
         }
 
-        /** Follow the Host switch for both entries. */
+        /** Follow what is actually in effect (the layer), so the switch matches the screen. */
         const useActive = () => {
-          const [active, setActive] = React.useState(isEnabled)
-          React.useEffect(() => prefs.subscribe(() => setActive(isEnabled())), [])
+          const [active, setActive] = React.useState(isOn)
+          React.useEffect(() => {
+            listeners.add(setActive)
+            const off = prefs.subscribe(() => setActive(isOn()))
+            return () => {
+              listeners.delete(setActive)
+              off()
+            }
+          }, [])
           return active
         }
 
